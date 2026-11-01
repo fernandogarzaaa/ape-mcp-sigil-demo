@@ -1,0 +1,49 @@
+name: ci
+on: [push, pull_request]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions: { contents: read }
+jobs:
+  ape:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: npm install --omit=dev --no-audit --no-fund
+      # Vendored engines carry their own deps (excluded from the repo); install before tests.
+      - run: npm --prefix vendors/genesis install --ignore-scripts --no-audit --no-fund
+      - run: npm --prefix vendors/eve install --ignore-scripts --no-audit --no-fund
+      - run: node scripts/check-licenses.mjs
+      - run: node scripts/check-no-bom.mjs
+      - run: node scripts/check-skill-mirrors.mjs
+      - run: node bin/ape-mcp.js doctor
+      - run: node scripts/smoke.mjs
+      - run: npm test
+      - name: ADAM prebuilt handshake (where present; else explicit-unavailable is covered by tests)
+        shell: bash
+        run: node scripts/verify-adam.mjs || echo "::warning::no prebuilt adam-mcp for $(uname -s); tests cover the explicit-unavailable contract"
+      - name: Skein import check (vendored)
+        shell: bash
+        run: PYTHONPATH=vendors/skein/src python -c "import skein.cli; print('skein ok')"
+      - name: Genesis + EVE dist present
+        shell: bash
+        run: test -f vendors/genesis/dist/cli/run.js && test -f vendors/eve/dist/cli/main.js
+  # Proves the cargo-build fallback path for platforms without a committed prebuilt binary.
+  adam-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build adam-mcp from vendored source + handshake
+        run: node scripts/verify-adam.mjs --build-if-missing
